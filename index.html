@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reaction Task & Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Segoe UI', sans-serif; background-color: #f4f7f6; }
+        #screen-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; width: 100vw; }
+        #welcome-screen, #status-screen { text-align: center; background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); width: 90%; max-width: 600px; }
+        #task-screen { display: none; background: white; width: 100vw; height: 100vh; }
+        canvas#taskCanvas { display: block; }
+        .chart-container { position: relative; margin: auto; height: 40vh; width: 100%; }
+        input { padding: 12px; font-size: 1rem; margin-bottom: 1rem; border: 2px solid #ddd; border-radius: 6px; width: 80%; }
+        button { padding: 12px 24px; font-size: 1rem; background-color: #4a90e2; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="screen-container">
+        <div id="welcome-screen">
+            <h2>Reaction Time Experiment</h2>
+            <input type="text" id="participant-id" placeholder="Enter Participant ID (Optional)">
+            <br>
+            <button id="start-btn">Start Task</button>
+        </div>
+
+        <div id="task-screen">
+            <canvas id="taskCanvas"></canvas>
+        </div>
+
+        <div id="status-screen" style="display:none;">
+            <h2 id="status-header">Analyzing Results...</h2>
+            <p id="user-stats"></p>
+            <div class="chart-container">
+                <canvas id="resultsChart"></canvas>
+            </div>
+            <br>
+            <button onclick="location.reload()">Restart</button>
+        </div>
+    </div>
+
+    <script>
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx0GOJpBcX1jeotigJQ0R-ErSK9e-7Gm3J2AEsMnm4dso1yxvPALqvF7qER0QNM_31o/exec"; 
+        const TOTAL_TRIALS = 10;
+        const CIRCLE_RADIUS = 50;
+        
+        let participantId = "";
+        let currentTrial = 0;
+        let trialsData = [];
+        let startTime, cX, cY;
+
+        const canvas = document.getElementById('taskCanvas');
+        const ctx = canvas.getContext('2d');
+
+        document.getElementById('start-btn').addEventListener('click', () => {
+            participantId = document.getElementById('participant-id').value.trim() || "User_" + Math.random().toString(36).substring(7).toUpperCase();
+            document.getElementById('welcome-screen').style.display = 'none';
+            document.getElementById('task-screen').style.display = 'block';
+            resize();
+            runTrial();
+        });
+
+        function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+        window.addEventListener('resize', resize);
+
+        function runTrial() {
+            if (currentTrial >= TOTAL_TRIALS) {
+                processFinalResults();
+                return;
+            }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            setTimeout(() => {
+                cX = Math.random() * (canvas.width - CIRCLE_RADIUS * 2) + CIRCLE_RADIUS;
+                cY = Math.random() * (canvas.height - CIRCLE_RADIUS * 2) + CIRCLE_RADIUS;
+                ctx.beginPath();
+                ctx.arc(cX, cY, CIRCLE_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = "#e74c3c";
+                ctx.fill();
+                startTime = performance.now();
+                canvas.onclick = (e) => {
+                    if (Math.sqrt((e.clientX - cX)**2 + (e.clientY - cY)**2) <= CIRCLE_RADIUS) {
+                        trialsData.push(Math.round(performance.now() - startTime));
+                        canvas.onclick = null;
+                        currentTrial++;
+                        runTrial();
+                    }
+                };
+            }, 500);
+        }
+
+        async function processFinalResults() {
+            document.getElementById('task-screen').style.display = 'none';
+            document.getElementById('status-screen').style.display = 'block';
+
+            const userAvg = trialsData.reduce((a, b) => a + b, 0) / trialsData.length;
+            document.getElementById('user-stats').innerText = `Your Average: ${userAvg.toFixed(2)} ms`;
+
+            // 1. POST current data
+            for (let i = 0; i < trialsData.length; i++) {
+                await fetch(WEB_APP_URL, {
+                    method: "POST",
+                    mode: "no-cors",
+                    body: JSON.stringify({
+                        Participant_ID: participantId,
+                        Trial_Number: i + 1,
+                        Reaction_Time: trialsData[i]
+                    })
+                });
+            }
+
+            // 2. GET all historical data
+            try {
+                const response = await fetch(WEB_APP_URL);
+                const allHistory = await response.json();
+                renderChart(allHistory, userAvg);
+                document.getElementById('status-header').innerText = "Global Comparison";
+            } catch (err) {
+                document.getElementById('status-header').innerText = "Error Loading History";
+            }
+        }
+
+        function renderChart(history, userAvg) {
+            const bins = {};
+            const binSize = 50; 
+            
+            // Create histogram bins from history
+            history.forEach(val => {
+                const bin = Math.floor(val / binSize) * binSize;
+                bins[bin] = (bins[bin] || 0) + 1;
+            });
+
+            const labels = Object.keys(bins).sort((a, b) => a - b);
+            const dataPoints = labels.map(l => bins[l]);
+
+            new Chart(document.getElementById('resultsChart'), {
+                type: 'bar',
+                data: {
+                    labels: labels.map(l => `${l}ms`),
+                    datasets: [{
+                        label: 'Global Frequency',
+                        data: dataPoints,
+                        backgroundColor: 'rgba(74, 144, 226, 0.5)',
+                        borderColor: '#4a90e2',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        annotation: {
+                            annotations: {
+                                line1: {
+                                    type: 'line',
+                                    xMin: labels.indexOf(Math.floor(userAvg / binSize) * binSize).toString(),
+                                    xMax: labels.indexOf(Math.floor(userAvg / binSize) * binSize).toString(),
+                                    borderColor: 'red',
+                                    borderWidth: 4,
+                                    label: {
+                                        display: true,
+                                        content: 'You',
+                                        position: 'start'
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
